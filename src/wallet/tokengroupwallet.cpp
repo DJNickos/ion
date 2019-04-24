@@ -1518,6 +1518,106 @@ extern UniValue tokeninfo(const UniValue &params, bool fHelp)
     return ret;
 }
 
+CScript BuildDataScript(const std::vector<std::vector<unsigned char> > &desc)
+{
+    CScript ret;
+    // Add a protocol description marker
+    uint32_t OpRetDataId = 78787878;
+    // Write the opcode and protocol description marker to the script
+    ret << OP_RETURN << OpRetDataId;
+    for (auto &d : desc)
+    {
+        // Add each data element to the script
+        ret << d;
+    }
+    return ret;
+}
+
+extern UniValue senddatatoken(const UniValue &params, bool fHelp)
+{
+    if (!pwalletMain)
+        return NullUniValue;
+
+    if (fHelp || params.size() < 1)
+        throw std::runtime_error(
+            "senddatatoken \"tokenID\" \"ionaddress\" tokenAmount \"data1\" ( \"data2\" ... )\n"
+            "\nSend a token to a given address and writes the data items in an OP_RETURN output. \n" +
+            HelpRequiringPassphrase() + "\n"
+
+            "\nArguments:\n"
+            "1.    \"tokenID\"  (string, required) The token identifier of the token to send.\n"
+            "2.    \"ionaddress\"  (string, required) The ion address to send to.\n"
+            "3.    \"amount\"      (numeric, required) The amount of tokens to send. eg 0.1\n"
+            "4..n. \"comment\"     (string, required) One or more strings that are send in an OP_RETURN output\n"
+
+            "\nResult:\n"
+            "\"transactionid\"  (string) The transaction id.\n"
+
+            "\nExamples:\n" +
+            HelpExampleCli("sendtokendata", "\"iVpPG131hKv1t6iSnbu9HRrhTC7oM2UEaj\" \"iVpPG131hKv1t6iSnbu9HRrhTC7oM2UEaj\" 0.1 \"playerName1\" \"1\" \"4213\""));
+    LOCK2(cs_main, pwalletMain->cs_wallet);
+    CWallet *wallet = pwalletMain;
+    CTokenGroupID grpID;
+    CAmount totalTokensNeeded = 0;
+    unsigned int curparam = 0;
+    std::vector<CRecipient> outputs;
+
+    grpID = GetTokenGroup(params[curparam].get_str());
+    if (!grpID.isUserGroup())
+    {
+        throw JSONRPCError(RPC_INVALID_PARAMS, "Invalid parameter: No group specified");
+    }
+
+    curparam++;
+    totalTokensNeeded = 0;
+
+    CTxDestination dst = DecodeDestination(params[curparam].get_str(), Params());
+    if (dst == CTxDestination(CNoDestination()))
+    {
+        throw JSONRPCError(RPC_INVALID_PARAMS, "Invalid parameter: destination address");
+    }
+    CAmount amount = tokenGroupManager->AmountFromTokenValue(params[curparam + 1], grpID);
+    if (amount <= 0)
+        throw JSONRPCError(RPC_TYPE_ERROR, "Invalid parameter: amount");
+    CScript script;
+    CRecipient recipient;
+    script = GetScriptForDestination(dst, grpID, amount);
+    recipient = {script, GROUPED_SATOSHI_AMT, false};
+
+    totalTokensNeeded += amount;
+    outputs.push_back(recipient);
+    curparam += 2;
+    
+    if (outputs.empty())
+        {
+            throw JSONRPCError(RPC_INVALID_PARAMS, "No destination address or payment amount");
+        }
+
+    // Optionally, add XDM fee
+    CAmount XDMFeeNeeded = 0;
+    if (tokenGroupManager->MatchesDarkMatter(grpID)) {
+        throw JSONRPCError(RPC_WALLET_ERROR, "Error: The transaction was rejected! Don't send data with XDM, you dummy.");
+    }
+
+    EnsureWalletIsUnlocked();
+ 
+    // Create a vector with all strings passed as a parameter, with the strings encoded as chars
+    std::vector<std::vector<unsigned char> > dataVec;
+    while(curparam < params.size()) {
+        std::string text = params[curparam].get_str();
+        dataVec.push_back(std::vector<unsigned char>(text.begin(), text.end()));
+        curparam++;
+    }
+ 
+    // Create the tx recipient with the data output
+    CScript opretScript = BuildDataScript(dataVec);
+    outputs.push_back(CRecipient{opretScript, 0, false});
+ 
+    CWalletTx wtx;
+    GroupSend(wtx, grpID, outputs, totalTokensNeeded, XDMFeeNeeded, wallet);
+    return wtx.GetHash().GetHex();
+}
+
 extern void WalletTxToJSON(const CWalletTx &wtx, UniValue &entry);
 using namespace std;
 
